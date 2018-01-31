@@ -13,7 +13,6 @@
 type 'a command = ?retries:int -> ?credentials:Credentials.t -> ?region:Util.region -> 'a
 
 
-open Async
 open Core
 
 module Ls : sig
@@ -26,7 +25,7 @@ module Ls : sig
     etag : string;
   }
 
-  type t = (contents list * cont) Deferred.Or_error.t
+  type t = (contents list * cont) Or_error.t Lwt.t
   and cont = More of (unit -> t) | Done
 end
 
@@ -61,17 +60,17 @@ val put :
   ?cache_control:string ->
   bucket:string ->
   key:string ->
-  string -> unit Deferred.Or_error.t) command
+  string -> unit Or_error.t Lwt.t) command
 
 (** Download [key] from s3 in [bucket] *)
 val get :
   (bucket:string -> key:string -> unit ->
-   string Deferred.Or_error.t) command
+   string Or_error.t Lwt.t) command
 
 (** Delete [key] from [bucket]. *)
 val delete :
   (bucket:string -> key:string -> unit ->
-   unit Deferred.Or_error.t) command
+   unit Or_error.t Lwt.t) command
 
 (** Delete multiple objects from [bucket].
 
@@ -80,7 +79,7 @@ val delete :
 *)
 val delete_multi :
   (bucket:string -> Delete_multi.objekt list -> unit ->
-   Delete_multi.result Deferred.Or_error.t) command
+   Delete_multi.result Or_error.t Lwt.t) command
 
 (** List contents in [bucket]
 

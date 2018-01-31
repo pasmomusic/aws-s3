@@ -18,9 +18,8 @@
 
 module R = Result
 open Core
-open Async
 open Cohttp
-open Cohttp_async
+open Cohttp_lwt
 open Protocol_conv_xml
 
 type 'a command = ?retries:int -> ?credentials:Credentials.t -> ?region:Util.region -> 'a
@@ -58,7 +57,7 @@ module Ls = struct
     contents: contents list [@key "Contents"];
   } [@@deriving of_protocol ~driver:(module Xml_light)]
 
-  type t = (contents list * cont) Deferred.Or_error.t
+  type t = (contents list * cont) Or_error.t Lwt.t
   and cont = More of (unit -> t) | Done
 
 end
@@ -114,14 +113,13 @@ end
 
 (* Default sleep upto 400 seconds *)
 let put ?(retries = 12) ?credentials ?(region=Util.Us_east_1) ?content_type ?(gzip=false) ?acl ?cache_control ~bucket ~key data =
-  let open Deferred.Or_error in
   let path = sprintf "%s/%s" bucket key in
   let content_encoding, body = match gzip with
     | true -> Some "gzip", Util.gzip_data data
     | false -> None, data
   in
   let rec cmd count =
-    let open Async in
+    let open Lwt in
     let headers =
       let content_type     = Option.map ~f:(fun ct -> ("Content-Type", ct)) content_type in
       let content_encoding = Option.map ~f:(fun ct -> ("Content-Encoding", ct)) content_encoding in
@@ -137,17 +135,19 @@ let put ?(retries = 12) ?credentials ?(region=Util.Us_east_1) ?content_type ?(gz
     | _, ((500 | 503) as code) when count < retries ->
         (* Should actually extract the textual error code: 'NOT_READY' = 500 | 'THROTTLED' = 503 *)
         let delay = ((2.0 ** float count) *. 100.) in
-        Log.Global.info "Put s3://%s was rate limited (%d). Sleeping %f ms" path code delay;
-        after (Time.Span.of_ms delay) >>= fun () ->
+        Lwt_log.ign_info_f "Put s3://%s was rate limited (%d). Sleeping %f ms" path code delay;
+        Lwt_unix.timeout delay >>= fun () ->
         cmd (count + 1)
     | _ ->
         Body.to_string body >>= fun body ->
         return (Or_error.errorf "Failed to put s3://%s: Response was: %s" path body)
   in
-  try_with_join (fun () -> cmd 0)
+  Util.Lwt_try_with_join.do_ (fun () -> cmd 0)
 
 (* Default sleep upto 400 seconds *)
 let get ?(retries = 12) ?credentials ?(region=Util.Us_east_1) ~bucket ~key () =
+  let open Lwt in
+  let open Lwt.Infix in
   let path = sprintf "%s/%s" bucket key in
   let rec cmd count =
     Util.make_request ?credentials ~region ~headers:[] ~meth:`GET ~path:(bucket ^ "/" ^ key) ~query:[] () >>= fun (resp, body) ->
@@ -159,16 +159,18 @@ let get ?(retries = 12) ?credentials ?(region=Util.Us_east_1) ~bucket ~key () =
     | _, ((500 | 503) as code) when count < retries ->
         (* Should actually extract the textual error code: 'NOT_READY' = 500 | 'THROTTLED' = 503 *)
         let delay = ((2.0 ** float count) *. 100.) in
-        Log.Global.info "Get %s was rate limited (%d). Sleeping %f ms" path code delay;
-        after (Time.Span.of_ms delay) >>= fun () ->
+        Lwt_log.ign_info_f "Get %s was rate limited (%d). Sleeping %f ms" path code delay;
+        Lwt_unix.timeout delay >>= fun () ->
         cmd (count + 1)
     | _ ->
         Body.to_string body >>= fun body ->
         return (Or_error.errorf "Failed to get s3://%s. Error was: %s" path body)
   in
-  Deferred.Or_error.try_with_join (fun () -> cmd 0)
+  Util.Lwt_try_with_join.do_ (fun () -> cmd 0)
 
 let delete ?(retries = 12) ?credentials ?(region=Util.Us_east_1) ~bucket ~key () =
+  let open Lwt in
+  let open Lwt.Infix in
   let path = sprintf "%s/%s" bucket key in
   let rec cmd count =
     Util.make_request ?credentials ~region ~headers:[] ~meth:`DELETE ~path ~query:[] () >>= fun (resp, body) ->
@@ -179,16 +181,18 @@ let delete ?(retries = 12) ?credentials ?(region=Util.Us_east_1) ~bucket ~key ()
     | _, ((500 | 503) as code) when count < retries ->
         (* Should actually extract the textual error code: 'NOT_READY' = 500 | 'THROTTLED' = 503 *)
         let delay = ((2.0 ** float count) *. 100.) in
-        Log.Global.info "Delete %s was rate limited (%d). Sleeping %f ms" path code delay;
-        after (Time.Span.of_ms delay) >>= fun () ->
+        Lwt_log.ign_info_f "Get %s was rate limited (%d). Sleeping %f ms" path code delay;
+        Lwt_unix.timeout delay >>= fun () ->
         cmd (count + 1)
     | _ ->
         Body.to_string body >>= fun body ->
         return (Or_error.errorf "Failed to delete s3://%s. Error was: %s" path body)
   in
-  Deferred.Or_error.try_with_join (fun () -> cmd 0)
+  Util.Lwt_try_with_join.do_ (fun () -> cmd 0)
 
 let delete_multi ?(retries = 12) ?credentials ?(region=Util.Us_east_1) ~bucket objects () =
+  let open Lwt in
+  let open Lwt.Infix in
   let request =
     Delete_multi.({
         quiet=false;
@@ -197,7 +201,7 @@ let delete_multi ?(retries = 12) ?credentials ?(region=Util.Us_east_1) ~bucket o
     |> Delete_multi.xml_of_request
     |> Xml.to_string
   in
-  let headers = [ "Content-MD5", B64.encode (Digest.string request) ] in
+  let headers = [ "Content-MD5", B64.encode (Md5.digest_string request |> Md5.to_binary) ] in
   let rec cmd count =
     Util.make_request ~body:request ?credentials ~region ~headers ~meth:`POST ~query:["delete", ""] ~path:bucket () >>= fun (resp, body) ->
     let status = Cohttp.Response.status resp in
@@ -209,16 +213,18 @@ let delete_multi ?(retries = 12) ?credentials ?(region=Util.Us_east_1) ~bucket o
     | _, ((500 | 503) as code) when count < retries ->
         (* Should actually extract the textual error code: 'NOT_READY' = 500 | 'THROTTLED' = 503 *)
         let delay = ((2.0 ** float count) *. 100.) in
-        Log.Global.info "Multi delete on bucket '%s' was rate limited (%d). Sleeping %f ms" bucket code delay;
-        after (Time.Span.of_ms delay) >>= fun () ->
+        Lwt_log.ign_info_f "Multi delete on bucket '%s' was rate limited (%d). Sleeping %f ms" bucket code delay;
+        Lwt_unix.timeout delay >>= fun () ->
         cmd (count + 1)
     | _ ->
         Body.to_string body >>= fun body ->
         return (Or_error.errorf "Failed to multi delete from bucket '%s'. Error was: %s" bucket body)
   in
-  Deferred.Or_error.try_with_join (fun () -> cmd 0)
+  Util.Lwt_try_with_join.do_ (fun () -> cmd 0)
 
 let rec ls ?(retries = 12) ?credentials ?(region=Util.Us_east_1) ?continuation_token ?prefix ~bucket () : Ls.t =
+  let open Lwt in
+  let open Lwt.Infix in
   let query = [ Some ("list-type", "2");
                 Option.map ~f:(fun ct -> ("continuation-token", ct)) continuation_token;
                 Option.map ~f:(fun prefix -> ("prefix", prefix)) prefix;
@@ -239,11 +245,11 @@ let rec ls ?(retries = 12) ?credentials ?(region=Util.Us_east_1) ?continuation_t
     | _, ((500 | 503) as code) when count < retries ->
         (* Should actually extract the textual error code: 'NOT_READY' = 500 | 'THROTTLED' = 503 *)
         let delay = ((2.0 ** float count) *. 100.) in
-        Log.Global.info "Get %s was rate limited (%d). Sleeping %f ms" bucket code delay;
-        after (Time.Span.of_ms delay) >>= fun () ->
+        Lwt_log.ign_info_f "Get %s was rate limited (%d). Sleeping %f ms" bucket code delay;
+        Lwt_unix.timeout delay >>= fun () ->
         cmd (count + 1)
     | _ ->
         Body.to_string body >>= fun body ->
         return (Or_error.errorf "Failed to ls s3://%s. Error was: %s" bucket body)
   in
-  Deferred.Or_error.try_with_join (fun () -> cmd 0)
+  Util.Lwt_try_with_join.do_ (fun () -> cmd 0)

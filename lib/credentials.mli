@@ -16,10 +16,10 @@ val make_credentials :
 module Iam : sig
 
   (** Get machine role though IAM service *)
-  val get_role : unit -> string Async.Deferred.Or_error.t
+  val get_role : unit -> string Core.Or_error.t Lwt.t
 
   (** Retrieve a credentials for a given role [role] *)
-  val get_credentials : string -> t Async.Deferred.Or_error.t
+  val get_credentials : string -> t Core.Or_error.t Lwt.t
 
 end
 
@@ -27,7 +27,7 @@ module Local : sig
   (** Load credentials from ~/.aws/credentials (file format compatible
       with botocore). *)
   val get_credentials :
-    ?profile:string -> unit -> t Async.Deferred.Or_error.t
+    ?profile:string -> unit -> t Core.Or_error.t Lwt.t
 end
 
 module Helper : sig
@@ -40,5 +40,5 @@ module Helper : sig
       service, using an assigned machine role.
   *)
   val get_credentials :
-    ?profile:string -> unit -> t Async.Deferred.Or_error.t
+    ?profile:string -> unit -> t Core.Or_error.t Lwt.t
 end

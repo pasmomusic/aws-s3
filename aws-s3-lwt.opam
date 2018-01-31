@@ -1,0 +1,21 @@
+opam-version: "1.2"
+authors: ["Anders Fugmann" "Wojtek Czekalski"]
+license: "BSD-3"
+homepage: "https://github.com/pasmomusic/aws-s3-lwt"
+dev-repo: "git+https://github.com/pasmomusic/aws-s3-lwt"
+bug-reports: "https://github.com/pasmomusic/aws-s3-lwt/issues"
+build: ["jbuilder" "build" "-p" name "-j" jobs]
+version: "1.1.0"
+depends: [
+  "jbuilder" { build }
+  "core" { >= "0.9" }
+  "lwt"
+  "ounit"
+  "cohttp-lwt"
+  "ocaml-inifiles"
+  "cryptokit"
+  "nocrypto"
+  "xml-light"
+  "yojson"
+  "ppx_protocol_conv"
+]

@@ -1,10 +1,10 @@
 (jbuild_version 1)
 
 (library
- ((name        aws_s3)
-  (public_name aws-s3)
+ ((name        aws_s3_lwt)
+  (public_name aws-s3-lwt)
   (synopsis "Aws s3 client library")
-  (libraries (core async async_extended oUnit cohttp cohttp.async inifiles cryptokit nocrypto yojson ppx_protocol_conv ppx_protocol_conv.runtime ppx_protocol_conv.json ppx_protocol_conv.xml xml-light str))
+  (libraries (core oUnit cohttp cohttp.lwt inifiles cryptokit nocrypto yojson ppx_protocol_conv ppx_protocol_conv.runtime ppx_protocol_conv.json ppx_protocol_conv.xml xml-light str))
   (flags (:standard -safe-string))
   (preprocess (pps (ppx_protocol_conv ppx_driver.runner)))
  )

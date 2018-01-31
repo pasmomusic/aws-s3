@@ -5,9 +5,9 @@ module R = Result
 (**/**)
 
 open Core
-open Async
+open Lwt
 open Cohttp
-open Cohttp_async
+open Cohttp_lwt
 
 type region =
   | Ap_northeast_1
@@ -33,12 +33,16 @@ val make_request :
   path:string ->
   query:(string * string) list ->
   unit ->
-  (Response.t * Body.t) Deferred.t
+  (Response.t * Body.t) Lwt.t
 
 
 module Test : sig
-  val async : ('a -> 'b Deferred.t) -> 'a -> 'b
-  val gunzip : string -> string Or_error.t Deferred.t
-  val test_gzip : 'a -> unit Deferred.t
+  val async : ('a -> 'b Lwt.t) -> 'a -> unit
+  val gunzip : string -> string Or_error.t Lwt.t
+  val test_gzip : 'a -> unit Lwt.t
   val unit_test : OUnit2.test
+end
+
+module Lwt_try_with_join : sig
+  val do_ : (unit -> 'a Or_error.t Lwt.t) -> 'a Or_error.t Lwt.t 
 end

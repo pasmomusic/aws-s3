@@ -18,9 +18,9 @@
 
 module R = Result
 open Core
-open Async
+open Lwt 
 open Cohttp
-open Cohttp_async
+open Cohttp_lwt
 
 let ksrt = fun (k,_) (k',_) -> String.compare k k'
 
@@ -170,7 +170,7 @@ module Auth = struct
     in
     (headers, hashed_payload)
 
-  let canonical_request hashed_payload (request : Cohttp_async.Request.t) =
+  let canonical_request hashed_payload (request : Cohttp_lwt.Request.t) =
     (* This corresponds to p.21 of the s3 api doc
        we're making:
        <HTTPMethod>\n
@@ -294,27 +294,25 @@ let make_request ?body ?(region=Us_east_1) ?(credentials:Credentials.t option) ~
     host :: (List.filter_opt [ content_length ]) @ headers @ amz_headers
   in
 
-  let request = Request.make ~meth
-      ~headers:(Header.of_list headers)
-      uri in
-
   let auth_header =
     match credentials with
     | Some { Credentials.aws_access_key; aws_secret_key; _ } ->
         Auth.auth_request ~now:time
           ~hashed_payload ~region:region
           ~aws_access_key
-          ~aws_secret_key request
+          ~aws_secret_key 
+          (Request.make ~meth ~headers:(Header.of_list headers) uri)
     | None -> []
   in
   let headers = (headers @ auth_header) |> Header.of_list in
-  let request = {request with Cohttp.Request.headers} in
   match meth with
-  | `PUT -> Cohttp_async.Client.request
+  | `PUT -> Cohttp_lwt_unix.Client.call
+              ~headers
               ~body:(Option.value_map ~f:(Body.of_string) ~default:`Empty body)
-              request
-  | `GET -> Cohttp_async.Client.request request
-  | `DELETE -> Cohttp_async.Client.request request
+              meth
+              uri
+  | `GET
+  | `DELETE -> Cohttp_lwt_unix.Client.call ~headers meth uri
   | _ -> failwith "not possible right now"
 
 
@@ -322,16 +320,14 @@ module Test = struct
   open OUnit2
 
   let async f ctx =
-    Thread_safe.block_on_async_exn (fun () -> f ctx)
-
-  open Async
+    ignore @@ Lwt.poll (f ctx)
 
   let gunzip data =
-    Process.create ~prog:"gunzip" ~args:[ "--no-name"; "-" ] () >>= fun proc ->
-    let proc = Or_error.ok_exn proc in
-    (* Write to the process. *)
-    Writer.write (Process.stdin proc) data;
-    Process.collect_stdout_and_wait proc
+    Lwt.catch (fun () -> 
+      let open Lwt.Infix in
+      Lwt_process.pmap ("", [|"gunzip"; "--no-name"; "-" |]) data 
+      >|= (fun result -> Result.Ok result)
+    ) (fun exn -> Lwt.return @@ Or_error.of_exn exn)
 
   let test_gzip _ =
     let test len =
@@ -343,11 +339,16 @@ module Test = struct
     in
 
     List.init ~f:(fun _ -> Random.int 100_000) 100
-    |> Deferred.List.iter ~how:`Parallel ~f:(test)
+    |> Lwt_list.iter_p test
 
   let unit_test =
     __MODULE__ >::: [
       "gzip" >:: async test_gzip
     ]
 
+end
+
+module Lwt_try_with_join = struct
+  let do_ inner =
+    Lwt.catch inner (fun exn -> Lwt.return @@ Or_error.of_exn exn)
 end

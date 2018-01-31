@@ -1,9 +1,10 @@
 module R = Result
 open Core
-open Async
 open Cohttp
-open Cohttp_async
 open Protocol_conv_json
+open Lwt.Infix
+open Lwt
+open Cohttp_lwt
 
 type time = Time.t
 let time_of_json t =
@@ -24,24 +25,22 @@ module Iam = struct
   let get_role () =
     let inner () =
       let uri = Uri.make ~host:instance_data_host ~scheme:"http" ~path:"/latest/meta-data/iam/security-credentials/" () in
-      let request = Cohttp.Request.make ~meth:`GET uri in
-      Cohttp_async.Client.request request >>= fun (response, body) ->
+      Cohttp_lwt_unix.Client.call `GET uri >>= fun (response, body) ->
       match Cohttp.Response.status response with
       | #Code.success_status ->
-          Body.to_string body >>= fun body ->
+          Cohttp_lwt.Body.to_string body >>= fun body ->
           return (Ok body)
       | _ ->
           Body.to_string body >>= fun body ->
           return (Or_error.errorf "Failed to get role from %s. Response was: %s" (Uri.to_string uri) body)
     in
-    Deferred.Or_error.try_with_join inner
+    Lwt.catch inner (fun exn -> Lwt.return @@ Or_error.of_exn exn)
 
   let get_credentials role =
     let inner () =
       let path = sprintf "/latest/meta-data/iam/security-credentials/%s" role in
       let uri = Uri.make ~host:instance_data_host ~scheme:"http" ~path () in
-      let request = Cohttp.Request.make ~meth:`GET uri in
-      Cohttp_async.Client.request request >>= fun (response, body) ->
+      Cohttp_lwt_unix.Client.call `GET uri >>= fun (response, body) ->
       match Cohttp.Response.status response with
       | #Code.success_status -> begin
           Body.to_string body >>= fun body ->
@@ -52,30 +51,30 @@ module Iam = struct
           Body.to_string body >>= fun body ->
           return (Or_error.errorf "Failed to get credentials from %s. Response was: %s" (Uri.to_string uri) body)
     in
-    Deferred.Or_error.try_with_join inner
+    Lwt.catch inner (fun exn -> Lwt.return @@ Or_error.of_exn exn)
 end
 
 module Local = struct
   let get_credentials ?(profile="default") () =
     let home = Sys.getenv "HOME" |> Option.value ~default:"." in
     let creds_file = sprintf "%s/.aws/credentials" home in
-    Deferred.Or_error.try_with ~name:creds_file ~extract_exn:false @@
-    fun () ->
     let ini = new Inifiles.inifile creds_file in
     let access_key = ini#getval profile "aws_access_key_id" in
     let secret_key = ini#getval profile "aws_secret_access_key" in
-    make_credentials ~access_key ~secret_key () |> return
+    let inner () = Result.Ok (make_credentials ~access_key ~secret_key ()) |> return in
+    Lwt.catch inner (fun exn -> Lwt.return @@ Or_error.of_exn exn)
 end
 
 module Helper = struct
-  let get_credentials ?profile () =
+  let get_credentials ?profile (): t Core.Or_error.t Lwt.t =
     match profile with
     | Some profile -> Local.get_credentials ~profile ()
     | None -> begin
         Local.get_credentials ~profile:"default" () >>= function
-        | Result.Ok c -> Deferred.Or_error.return c
+        | Result.Ok c -> Lwt_result.return c
         | Error _ ->
-            Iam.get_role () >>=? fun role ->
-            Iam.get_credentials role
+            Iam.get_role () >>= function
+              | Result.Ok role -> Iam.get_credentials role
+              | Error x -> Lwt.return @@ Error x
       end
 end
